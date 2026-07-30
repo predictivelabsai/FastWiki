@@ -1,8 +1,10 @@
 from __future__ import annotations
 import html, json
 from fasthtml.common import *
+from urllib.parse import quote
 
 ACCENT="#4f46e5"; TINT="#eef2ff"
+FAVICON="data:image/svg+xml,"+quote('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#4f46e5"/><path fill="white" d="M13 17h9l5 27 5-18 5 18 5-27h9l-10 31h-9l-5-16-5 16h-9Z"/></svg>',safe="")
 BASE_CSS=r"""
 :root{--accent:#4f46e5;--tint:#eef2ff;--ink:#172033;--muted:#667085;--line:#e5e7eb;--panel:#f8fafc}
 *{box-sizing:border-box}body{margin:0;color:var(--ink);background:#fff;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}a{color:inherit}
@@ -13,7 +15,7 @@ BASE_CSS=r"""
 """
 
 def head(title):
-    return Head(Title(title),Meta(charset="utf-8"),Meta(name="viewport",content="width=device-width,initial-scale=1"),Meta(name="description",content="Open-source knowledge that works with your whole office suite."),Link(rel="preconnect",href="https://fonts.googleapis.com"),Link(rel="stylesheet",href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"),Style(BASE_CSS))
+    return Head(Title(title),Meta(charset="utf-8"),Meta(name="viewport",content="width=device-width,initial-scale=1"),Meta(name="description",content="Open-source knowledge that works with your whole office suite."),Link(rel="icon",type="image/svg+xml",href=FAVICON),Link(rel="preconnect",href="https://fonts.googleapis.com"),Link(rel="stylesheet",href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"),Style(BASE_CSS))
 
 def landing():
     return Html(head("FastWiki · Knowledge without lock-in"),Body(
