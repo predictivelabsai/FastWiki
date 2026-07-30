@@ -1,4 +1,5 @@
 import importlib, json, os
+import base64, hashlib, hmac, time
 from pathlib import Path
 import pytest
 
@@ -55,3 +56,21 @@ def test_local_attachment_storage(database):
     storage.put(key,b"hello","text/plain")
     assert storage.get(key)==b"hello"
 
+def test_fastoffice_ticket_contract_and_replay_protection(monkeypatch):
+    monkeypatch.setenv("FASTOFFICE_SSO_SECRET","shared-test-secret")
+    from fastwiki import security
+    security._seen.clear()
+    payload={
+        "sub":"1","email":"owner@example.com","name":"Owner",
+        "org_id":"org-a","org_name":"Alpha","role":"owner",
+        "aud":"wiki","exp":int(time.time())+60,"jti":"single-use-ticket",
+    }
+    encoded=base64.urlsafe_b64encode(
+        json.dumps(payload,separators=(",",":")).encode()
+    ).decode().rstrip("=")
+    signature=hmac.new(
+        b"shared-test-secret",encoded.encode(),hashlib.sha256
+    ).hexdigest()
+    ticket=f"{encoded}.{signature}"
+    assert security.verify_suite_ticket(ticket)["email"]=="owner@example.com"
+    assert security.verify_suite_ticket(ticket) is None
