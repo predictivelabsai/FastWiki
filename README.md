@@ -3,6 +3,7 @@
 FastWiki is the open-source knowledge workspace in FastOffice: a lightweight
 Confluence-style wiki for SMEs with a Tiptap rich editor, portable JSON content,
 optional Markdown, comments, attachments, search, page history, tenant-safe APIs,
+hierarchical draft/published pages, a workspace-grounded LangChain assistant,
 and links to the wider FastOffice suite.
 
 ## Run locally
@@ -16,6 +17,13 @@ cp .env.sample .env
 
 Open `http://localhost:5022/auth/dev`. Production disables this development
 entry point and uses short-lived FastOffice suite tickets.
+
+The AI Assistant uses the OpenAI-compatible xAI endpoint through LangChain by
+default. Configure `FASTWIKI_AI_PROVIDER`, `FASTWIKI_AI_MODEL`,
+`FASTWIKI_AI_BASE_URL`, and either `XAI_API_KEY` or `OPENAI_API_KEY`. Set
+`FASTWIKI_AI_QUERY_LIMIT=5` for a daily per-user allowance or `0` for unlimited
+queries. Emails listed in `FASTWIKI_ADMIN_EMAILS` are administrators and bypass
+the query limit.
 
 ## Architecture
 
@@ -41,4 +49,3 @@ The initial release uses debounced autosave and optimistic locking, which is
 predictable and inexpensive for SME teams. Real-time co-editing is intentionally
 reserved for a later Y.js/Hocuspocus service so it can be added without changing
 the canonical Tiptap JSON format.
-

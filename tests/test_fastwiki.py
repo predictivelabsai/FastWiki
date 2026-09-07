@@ -71,6 +71,78 @@ def test_new_page_route_creates_page(database,monkeypatch):
     assert response.headers["location"].startswith("/pages/")
     assert len(db.pages("dev"))==before+1
 
+def test_drafts_are_private_until_published(database):
+    db,a,_=database
+    member={"sub":"member","email":"member@example.com","name":"Member","org_id":"org-a","org_name":"Alpha","role":"member"}
+    db.provision(member)
+    space=db.spaces("org-a")[0]
+    pid=db.create_page(a,space["id"],"Private plan")
+
+    assert db.visible_page(a,pid)["status"]=="draft"
+    assert db.visible_page(member,pid) is None
+    assert db.set_page_status(a,pid,"published")
+    assert db.visible_page(member,pid)["title"]=="Private plan"
+    assert not db.set_page_status(member,pid,"draft")
+
+def test_child_pages_form_tenant_safe_hierarchy(database):
+    db,a,b=database
+    space=db.spaces("org-a")[0]
+    parent=db.create_page(a,space["id"],"Parent")
+    child=db.create_page(a,space["id"],"Child",parent_id=parent)
+    grandchild=db.create_page(a,space["id"],"Grandchild",parent_id=child)
+
+    assert db.page("org-a",child)["parent_id"]==parent
+    assert [item["id"] for item in db.ancestors(a,grandchild)]==[parent,child]
+    with pytest.raises(ValueError):
+        db.create_page(b,db.spaces("org-b")[0]["id"],"Invalid child",parent_id=parent)
+
+def test_assistant_sources_and_limits_are_tenant_scoped(database,monkeypatch):
+    db,a,b=database
+    from fastwiki import assistant
+    monkeypatch.setenv("FASTWIKI_AI_QUERY_LIMIT","1")
+    member={"sub":"member","email":"member@example.com","name":"Member","org_id":"org-a","org_name":"Alpha","role":"member"}
+    db.provision(member)
+    pid=db.pages("org-a")[0]["id"]
+    db.save_page(a,pid,"Alpha handbook",json.dumps({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Alpha launch policy"}]}]}),"Alpha launch policy",1)
+
+    sources=assistant.source_pages(member,"launch policy")
+    assert sources[0]["title"]=="Alpha handbook"
+    assert all(item["id"]!=db.pages("org-b")[0]["id"] for item in sources)
+    assert assistant.remaining_queries(member)==1
+    db.record_assistant_query(member)
+    assert assistant.remaining_queries(member)==0
+    assert assistant.remaining_queries(a) is None
+
+def test_configured_admin_role(monkeypatch):
+    from fastwiki import assistant
+    monkeypatch.setenv("FASTWIKI_ADMIN_EMAILS","admin@example.com")
+    identity={"sub":"1","email":"ADMIN@example.com","role":"member"}
+    assert assistant.configured_admin(identity)["role"]=="admin"
+
+def test_assistant_ui_streams_grounded_response(database,monkeypatch):
+    db,_,_=database
+    monkeypatch.setenv("FASTWIKI_ENV","development")
+    from app import app
+    from fastwiki import assistant
+    from starlette.testclient import TestClient
+    monkeypatch.setattr(assistant,"stream_answer",lambda identity,question,history,sources:iter(["Grounded answer [1]"]))
+
+    with TestClient(app) as client:
+        client.get("/auth/dev")
+        page=client.get("/assistant")
+        thread_id=page.text.split('data-thread="',1)[1].split('"',1)[0]
+        response=client.post("/assistant/query",json={"thread_id":thread_id,"question":"What is in the welcome page?"})
+        message_id=json.loads(response.text.strip().splitlines()[-1])["message_id"]
+        approved=client.post(f"/assistant/messages/{message_id}/draft",follow_redirects=False)
+
+    assert "AI Assistant" in page.text
+    assert "Grounded answer [1]" in response.text
+    assert '"type": "sources"' in response.text
+    assert approved.status_code==303
+    created=db.page("dev",int(approved.headers["location"].rsplit("/",1)[1]))
+    assert created["status"]=="draft"
+    assert created["markdown"]=="Grounded answer [1]"
+
 def test_fastoffice_ticket_contract_and_replay_protection(monkeypatch):
     monkeypatch.setenv("FASTOFFICE_SSO_SECRET","shared-test-secret")
     from fastwiki import security
