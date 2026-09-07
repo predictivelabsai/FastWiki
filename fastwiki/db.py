@@ -27,9 +27,9 @@ CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT NOT NULL,name TE
 CREATE TABLE IF NOT EXISTS memberships(org_id TEXT,user_id TEXT,role TEXT NOT NULL,PRIMARY KEY(org_id,user_id));
 CREATE TABLE IF NOT EXISTS invitations(id INTEGER PRIMARY KEY,org_id TEXT,email TEXT,role TEXT,token TEXT UNIQUE,status TEXT DEFAULT 'pending',created_at TEXT);
 CREATE TABLE IF NOT EXISTS spaces(id INTEGER PRIMARY KEY,org_id TEXT NOT NULL,name TEXT NOT NULL,slug TEXT NOT NULL,description TEXT DEFAULT '',visibility TEXT DEFAULT 'org',comments_mode TEXT DEFAULT 'both',created_at TEXT,UNIQUE(org_id,slug));
-CREATE TABLE IF NOT EXISTS pages(id INTEGER PRIMARY KEY,org_id TEXT NOT NULL,space_id INTEGER NOT NULL,parent_id INTEGER,title TEXT NOT NULL,slug TEXT NOT NULL,content_json TEXT NOT NULL,markdown TEXT DEFAULT '',plain_text TEXT DEFAULT '',version INTEGER DEFAULT 1,status TEXT DEFAULT 'published',created_by TEXT,updated_by TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT);
+CREATE TABLE IF NOT EXISTS pages(id INTEGER PRIMARY KEY,org_id TEXT NOT NULL,space_id INTEGER NOT NULL,parent_id INTEGER,title TEXT NOT NULL,slug TEXT NOT NULL,content_json TEXT NOT NULL,markdown TEXT DEFAULT '',plain_text TEXT DEFAULT '',version INTEGER DEFAULT 1,status TEXT DEFAULT 'published',published_at TEXT,published_by TEXT,created_by TEXT,updated_by TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT);
 CREATE TABLE IF NOT EXISTS page_versions(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,version INTEGER,content_json TEXT,markdown TEXT,title TEXT,created_by TEXT,created_at TEXT);
-CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,user_id TEXT,body TEXT,kind TEXT DEFAULT 'page',anchor_json TEXT DEFAULT '{}',resolved_at TEXT,created_at TEXT);
+CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,user_id TEXT,parent_id INTEGER,body TEXT,kind TEXT DEFAULT 'page',anchor_json TEXT DEFAULT '{}',resolved_at TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,name TEXT,storage_key TEXT,content_type TEXT,size INTEGER,created_by TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS embeds(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,product TEXT,title TEXT,url TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS favourites(org_id TEXT,user_id TEXT,page_id INTEGER,PRIMARY KEY(org_id,user_id,page_id));
@@ -43,7 +43,16 @@ CREATE INDEX IF NOT EXISTS idx_assistant_queries_user ON assistant_queries(org_i
 """
 
 def init():
-    with conn() as db: db.executescript(SCHEMA)
+    with conn() as db:
+        db.executescript(SCHEMA)
+        page_columns={column[1] for column in db.execute("PRAGMA table_info(pages)")}
+        comment_columns={column[1] for column in db.execute("PRAGMA table_info(comments)")}
+        if "published_at" not in page_columns: db.execute("ALTER TABLE pages ADD COLUMN published_at TEXT")
+        if "published_by" not in page_columns: db.execute("ALTER TABLE pages ADD COLUMN published_by TEXT")
+        if "parent_id" not in comment_columns: db.execute("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
+        db.execute("UPDATE pages SET published_at=COALESCE(published_at,updated_at,created_at),published_by=COALESCE(published_by,created_by) WHERE status='published'")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(org_id,page_id,parent_id)")
+        db.commit()
 
 def provision(who: dict):
     with conn() as db:
@@ -53,14 +62,14 @@ def provision(who: dict):
         if not db.execute("SELECT 1 FROM spaces WHERE org_id=?",(who["org_id"],)).fetchone():
             ts=now(); sid=db.execute("INSERT INTO spaces(org_id,name,slug,description,created_at) VALUES(?,?,?,?,?)",(who["org_id"],"Company handbook","handbook","Shared knowledge for the whole team",ts)).lastrowid
             content={"type":"doc","content":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Welcome to FastWiki"}]},{"type":"paragraph","content":[{"type":"text","text":"Capture decisions, processes, and ideas in one calm workspace."}]}]}
-            db.execute("INSERT INTO pages(org_id,space_id,title,slug,content_json,markdown,plain_text,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(who["org_id"],sid,"Welcome","welcome",json.dumps(content),"# Welcome to FastWiki\n\nCapture decisions, processes, and ideas.","Welcome to FastWiki Capture decisions processes and ideas",who["sub"],who["sub"],ts,ts))
+            db.execute("INSERT INTO pages(org_id,space_id,title,slug,content_json,markdown,plain_text,status,published_at,published_by,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(who["org_id"],sid,"Welcome","welcome",json.dumps(content),"# Welcome to FastWiki\n\nCapture decisions, processes, and ideas.","Welcome to FastWiki Capture decisions processes and ideas","published",ts,who["sub"],who["sub"],who["sub"],ts,ts))
         db.commit()
 
 def spaces(org): return rows("SELECT * FROM spaces WHERE org_id=? ORDER BY name",(org,))
 def pages(org, include_deleted=False):
     where="" if include_deleted else "AND deleted_at IS NULL"
-    return rows(f"SELECT p.*,s.name space_name FROM pages p JOIN spaces s ON s.id=p.space_id WHERE p.org_id=? {where} ORDER BY p.parent_id IS NOT NULL,p.title",(org,))
-def page(org,pid): return row("SELECT p.*,s.name space_name,s.comments_mode FROM pages p JOIN spaces s ON s.id=p.space_id WHERE p.org_id=? AND p.id=?",(org,pid))
+    return rows(f"SELECT p.*,s.name space_name,u.name author_name FROM pages p JOIN spaces s ON s.id=p.space_id LEFT JOIN users u ON u.id=p.created_by WHERE p.org_id=? {where} ORDER BY p.parent_id IS NOT NULL,p.title",(org,))
+def page(org,pid): return row("SELECT p.*,s.name space_name,s.comments_mode,u.name author_name FROM pages p JOIN spaces s ON s.id=p.space_id LEFT JOIN users u ON u.id=p.created_by WHERE p.org_id=? AND p.id=?",(org,pid))
 def is_admin(who): return who.get("role") in ("owner","admin")
 def can_view(who,item): return item and (item["status"]=="published" or item["created_by"]==who["sub"] or is_admin(who))
 def visible_pages(who,include_deleted=False): return [item for item in pages(who["org_id"],include_deleted) if can_view(who,item)]
@@ -106,7 +115,11 @@ def set_page_status(who,pid,status):
     if status not in ("draft","published"): raise ValueError("status")
     current=visible_page(who,pid)
     if not current or (current["created_by"]!=who["sub"] and not is_admin(who)): return False
-    execute("UPDATE pages SET status=?,updated_by=?,updated_at=? WHERE org_id=? AND id=?",(status,who["sub"],now(),who["org_id"],pid))
+    ts=now()
+    if status=="published":
+        execute("UPDATE pages SET status=?,published_at=?,published_by=?,updated_by=?,updated_at=? WHERE org_id=? AND id=?",(status,ts,who["sub"],who["sub"],ts,who["org_id"],pid))
+    else:
+        execute("UPDATE pages SET status=?,updated_by=?,updated_at=? WHERE org_id=? AND id=?",(status,who["sub"],ts,who["org_id"],pid))
     return True
 def ancestors(who,pid):
     found=[]; seen=set(); current=visible_page(who,pid)
@@ -122,10 +135,12 @@ def trash(who,pid):
 def restore(who,pid):
     if visible_page(who,pid): execute("UPDATE pages SET deleted_at=NULL WHERE org_id=? AND id=?",(who["org_id"],pid))
 def comments(org,pid): return rows("SELECT c.*,u.name user_name FROM comments c JOIN users u ON u.id=c.user_id WHERE c.org_id=? AND c.page_id=? ORDER BY c.id",(org,pid))
-def add_comment(who,pid,body,kind="page",anchor_json="{}"):
+def add_comment(who,pid,body,kind="page",anchor_json="{}",parent_id=None):
     target=visible_page(who,pid)
     if not target or target["comments_mode"]=="off" or (target["comments_mode"]=="page" and kind=="inline") or (target["comments_mode"]=="inline" and kind=="page"): raise ValueError("comments disabled")
-    return execute("INSERT INTO comments(page_id,org_id,user_id,body,kind,anchor_json,created_at) VALUES(?,?,?,?,?,?,?)",(pid,who["org_id"],who["sub"],body,kind,anchor_json,now()))
+    if not body.strip(): raise ValueError("comment body")
+    if parent_id and not row("SELECT id FROM comments WHERE id=? AND org_id=? AND page_id=?",(parent_id,who["org_id"],pid)): raise ValueError("parent comment")
+    return execute("INSERT INTO comments(page_id,org_id,user_id,parent_id,body,kind,anchor_json,created_at) VALUES(?,?,?,?,?,?,?,?)",(pid,who["org_id"],who["sub"],parent_id,body.strip(),kind,anchor_json,now()))
 def add_embed(who,pid,product,title,url):
     if not visible_page(who,pid): raise ValueError("page")
     return execute("INSERT INTO embeds(page_id,org_id,product,title,url,created_at) VALUES(?,?,?,?,?,?)",(pid,who["org_id"],product,title,url,now()))
