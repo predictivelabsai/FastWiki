@@ -56,6 +56,21 @@ def test_local_attachment_storage(database):
     storage.put(key,b"hello","text/plain")
     assert storage.get(key)==b"hello"
 
+def test_new_page_route_creates_page(database,monkeypatch):
+    db,_,_=database
+    monkeypatch.setenv("FASTWIKI_ENV","development")
+    from app import app
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        assert client.get("/auth/dev").status_code==200
+        before=len(db.pages("dev"))
+        response=client.get("/pages/new",follow_redirects=False)
+
+    assert response.status_code==303
+    assert response.headers["location"].startswith("/pages/")
+    assert len(db.pages("dev"))==before+1
+
 def test_fastoffice_ticket_contract_and_replay_protection(monkeypatch):
     monkeypatch.setenv("FASTOFFICE_SSO_SECRET","shared-test-secret")
     from fastwiki import security
