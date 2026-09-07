@@ -4,7 +4,8 @@ FastWiki is the open-source knowledge workspace in FastOffice: a lightweight
 Confluence-style wiki for SMEs with a Tiptap rich editor, portable JSON content,
 optional Markdown, comments, attachments, search, page history, tenant-safe APIs,
 hierarchical draft/published pages, a workspace-grounded LangChain assistant,
-and links to the wider FastOffice suite.
+threaded discussions, visible publication provenance, and links to the wider
+FastOffice suite.
 
 ## Run locally
 

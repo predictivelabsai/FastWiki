@@ -1,4 +1,4 @@
-import importlib, json, os
+import importlib, json, os, sqlite3
 import base64, hashlib, hmac, time
 from pathlib import Path
 import pytest
@@ -13,6 +13,23 @@ def database(tmp_path,monkeypatch):
     b={"sub":"b","email":"b@example.com","name":"Bob","org_id":"org-b","org_name":"Beta","role":"owner"}
     db.provision(a);db.provision(b)
     return db,a,b
+
+def test_schema_migrates_existing_pages_and_comments(tmp_path,monkeypatch):
+    path=tmp_path/"legacy.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE pages(id INTEGER PRIMARY KEY,org_id TEXT NOT NULL,space_id INTEGER NOT NULL,parent_id INTEGER,title TEXT NOT NULL,slug TEXT NOT NULL,content_json TEXT NOT NULL,markdown TEXT DEFAULT '',plain_text TEXT DEFAULT '',version INTEGER DEFAULT 1,status TEXT DEFAULT 'published',created_by TEXT,updated_by TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT)")
+        connection.execute("CREATE TABLE comments(id INTEGER PRIMARY KEY,page_id INTEGER,org_id TEXT,user_id TEXT,body TEXT,kind TEXT DEFAULT 'page',anchor_json TEXT DEFAULT '{}',resolved_at TEXT,created_at TEXT)")
+        connection.execute("INSERT INTO pages(id,org_id,space_id,title,slug,content_json,status,created_by,created_at,updated_at) VALUES(1,'org',1,'Legacy','legacy','{}','published','author','2026-01-01T00:00:00+00:00','2026-01-02T00:00:00+00:00')")
+    monkeypatch.setenv("FASTWIKI_DB",str(path))
+    from fastwiki import db
+    importlib.reload(db)
+
+    page_columns={column["name"] for column in db.rows("PRAGMA table_info(pages)")}
+    comment_columns={column["name"] for column in db.rows("PRAGMA table_info(comments)")}
+    migrated=db.row("SELECT published_at,published_by FROM pages WHERE id=1")
+    assert {"published_at","published_by"}<=page_columns
+    assert "parent_id" in comment_columns
+    assert migrated=={"published_at":"2026-01-02T00:00:00+00:00","published_by":"author"}
 
 def test_tenant_safe_pages(database):
     db,a,b=database
@@ -49,6 +66,20 @@ def test_comment_modes(database):
     with pytest.raises(ValueError):
         db.add_comment(a,pid,"No inline","inline")
 
+def test_comment_replies_are_nested_and_page_scoped(database):
+    db,a,_=database
+    page=db.pages("org-a")[0]
+    root=db.add_comment(a,page["id"],"First comment")
+    reply=db.add_comment(a,page["id"],"A reply","reply",parent_id=root)
+    nested=db.add_comment(a,page["id"],"A nested reply","reply",parent_id=reply)
+    thread=db.comments("org-a",page["id"])
+
+    assert [item["parent_id"] for item in thread]==[None,root,reply]
+    assert thread[-1]["id"]==nested
+    other=db.create_page(a,page["space_id"],"Other page")
+    with pytest.raises(ValueError):
+        db.add_comment(a,other,"Wrong thread","reply",parent_id=root)
+
 def test_local_attachment_storage(database):
     db,a,_=database
     from fastwiki import storage
@@ -81,8 +112,35 @@ def test_drafts_are_private_until_published(database):
     assert db.visible_page(a,pid)["status"]=="draft"
     assert db.visible_page(member,pid) is None
     assert db.set_page_status(a,pid,"published")
-    assert db.visible_page(member,pid)["title"]=="Private plan"
+    published=db.visible_page(member,pid)
+    assert published["title"]=="Private plan"
+    assert published["published_at"]
+    assert published["published_by"]==a["sub"]
+    assert published["author_name"]==a["name"]
     assert not db.set_page_status(member,pid,"draft")
+
+def test_page_layout_has_bottom_resources_threads_and_publication_metadata(database,monkeypatch):
+    db,_,_=database
+    monkeypatch.setenv("FASTWIKI_ENV","development")
+    from app import app
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        client.get("/auth/dev")
+        page=db.pages("dev")[0]
+        who={"sub":"kaljuvee@gmail.com","email":"kaljuvee@gmail.com","name":"Julian Kaljuvee","org_id":"dev","org_name":"FastSME","role":"owner"}
+        root=db.add_comment(who,page["id"],"Root discussion")
+        db.add_comment(who,page["id"],"Threaded answer","reply",parent_id=root)
+        response=client.get(f"/pages/{page['id']}")
+
+    assert response.status_code==200
+    assert 'class="bottom-bar"' in response.text
+    assert 'class="rightbar"' not in response.text
+    assert "Root discussion" in response.text and "Threaded answer" in response.text
+    assert "Reply to Julian Kaljuvee" in response.text
+    assert "Published " in response.text and "Version " in response.text
+    assert 'id="publication-version">1</span>' in response.text
+    assert "Julian Kaljuvee" in response.text
 
 def test_child_pages_form_tenant_safe_hierarchy(database):
     db,a,b=database

@@ -103,12 +103,12 @@ def post(session,pid:int):
     if not isinstance(identity,RedirectResponse):db.restore(identity,pid)
     return RedirectResponse(f"/pages/{pid}",status_code=303)
 @rt("/pages/{pid}/comments")
-def post(session,pid:int,body:str,kind:str="page"):
+def post(session,pid:int,body:str,kind:str="page",parent_id:int=0):
     identity=guard(session)
     if not isinstance(identity,RedirectResponse):
-        try:db.add_comment(identity,pid,body,kind)
+        try:db.add_comment(identity,pid,body,kind,parent_id=parent_id or None)
         except ValueError:pass
-    return RedirectResponse(f"/pages/{pid}",status_code=303)
+    return RedirectResponse(f"/pages/{pid}#comments",status_code=303)
 @rt("/pages/{pid}/embeds")
 def post(session,pid:int,product:str,title:str,url:str):
     identity=guard(session)
