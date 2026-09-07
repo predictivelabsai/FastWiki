@@ -4,9 +4,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fasthtml.common import *
 from fastwiki.seo import register_seo_routes
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 load_dotenv()
-from fastwiki import db, storage, views
+from fastwiki import assistant, db, storage, views
 from fastwiki.api import api
 from fastwiki.security import google_email_allowed, google_identity, verify_suite_ticket
 
@@ -28,14 +28,18 @@ if _google_enabled:
 
 app,rt=fast_app(secret_key=os.getenv("FASTWIKI_SECRET",secrets.token_hex(32)))
 app.mount("/api",api)
-def who(session): return session.get("identity")
+def who(session):
+    identity=session.get("identity")
+    if identity:
+        identity=assistant.configured_admin(identity);session["identity"]=identity
+    return identity
 def sign_in_path(): return "/auth/google" if _google_enabled else "/auth/suite"
 def guard(session): return who(session) or RedirectResponse(sign_in_path(),status_code=303)
 @rt("/")
 def get(session):
     identity=who(session)
     if not identity:return views.landing(sign_in_path())
-    pages=db.pages(identity["org_id"])
+    pages=db.visible_pages(identity)
     return RedirectResponse(f"/pages/{pages[0]['id']}",status_code=303) if pages else RedirectResponse("/pages/new",status_code=303)
 @rt("/health")
 def get(): return JSONResponse({"status":"ok","product":"FastWiki","storage":storage.backend()})
@@ -88,9 +92,9 @@ def get(session):session.clear();return RedirectResponse("/",status_code=303)
 def get(session,pid:int):
     identity=guard(session)
     if isinstance(identity,RedirectResponse):return identity
-    current=db.page(identity["org_id"],pid)
+    current=db.visible_page(identity,pid)
     if not current or current["deleted_at"]:return Response("Page not found",status_code=404)
-    return views.page_shell(identity,db.spaces(identity["org_id"]),db.pages(identity["org_id"]),current,db.comments(identity["org_id"],pid),db.attachments(identity["org_id"],pid),db.embeds(identity["org_id"],pid))
+    return views.page_shell(identity,db.spaces(identity["org_id"]),db.visible_pages(identity),current,db.comments(identity["org_id"],pid),db.attachments(identity["org_id"],pid),db.embeds(identity["org_id"],pid),db.ancestors(identity,pid))
 @rt("/pages/new")
 def get(session):
     identity=guard(session)
@@ -98,6 +102,22 @@ def get(session):
     spaces=db.spaces(identity["org_id"])
     if not spaces:return RedirectResponse("/settings",status_code=303)
     pid=db.create_page(identity,spaces[0]["id"],"Untitled page")
+    return RedirectResponse(f"/pages/{pid}",status_code=303)
+@rt("/pages/{pid}/children")
+def post(session,pid:int):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    parent=db.visible_page(identity,pid)
+    if not parent or parent["deleted_at"]:return Response("Page not found",status_code=404)
+    child_id=db.create_page(identity,parent["space_id"],"Untitled child page",parent_id=pid)
+    return RedirectResponse(f"/pages/{child_id}",status_code=303)
+@rt("/pages/{pid}/status")
+def post(session,pid:int,status:str):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    try: changed=db.set_page_status(identity,pid,status)
+    except ValueError:return Response("Invalid page status",status_code=422)
+    if not changed:return Response("Page not found",status_code=404)
     return RedirectResponse(f"/pages/{pid}",status_code=303)
 @rt("/pages/{pid}/save")
 async def post(request,session,pid:int):
@@ -148,20 +168,71 @@ async def post(request,session,pid:int):
 def get(session,aid:int):
     identity=guard(session)
     if isinstance(identity,RedirectResponse):return identity
-    item=db.attachment(identity["org_id"],aid)
+    item=db.visible_attachment(identity,aid)
     if not item:return Response("Not found",status_code=404)
     return Response(storage.get(item["storage_key"]),media_type=item["content_type"],headers={"Content-Disposition":f'inline; filename="{item["name"]}"'})
 @rt("/search")
 def get(session,q:str=""):
     identity=guard(session)
     if isinstance(identity,RedirectResponse):return identity
-    return views.list_page(identity,db.spaces(identity["org_id"]),db.pages(identity["org_id"]),"Search",db.search(identity["org_id"],q) if q else [])
+    items=[item for item in db.search(identity["org_id"],q) if db.can_view(identity,db.page(identity["org_id"],item["id"]))] if q else []
+    return views.list_page(identity,db.spaces(identity["org_id"]),db.visible_pages(identity),"Search",items)
+@rt("/assistant")
+def get(session,thread:str=""):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    threads=db.assistant_threads(identity)
+    current=db.assistant_thread(identity,thread) if thread else (threads[0] if threads else None)
+    if not current:
+        thread_id=uuid.uuid4().hex;db.create_assistant_thread(identity,thread_id);current=db.assistant_thread(identity,thread_id);threads=db.assistant_threads(identity)
+    return views.assistant_shell(identity,threads,current,db.assistant_messages(identity,current["id"]),assistant.source_pages(identity,""),assistant.remaining_queries(identity))
+@rt("/assistant/threads")
+def post(session):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    thread_id=uuid.uuid4().hex;db.create_assistant_thread(identity,thread_id)
+    return RedirectResponse(f"/assistant?thread={thread_id}",status_code=303)
+@rt("/assistant/query")
+async def post(request,session):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return JSONResponse({"error":"unauthorized"},status_code=401)
+    body=await request.json();thread_id=str(body.get("thread_id","")).strip();question=str(body.get("question","")).strip()
+    if not question:return JSONResponse({"error":"Ask a question first."},status_code=422)
+    if not db.assistant_thread(identity,thread_id):return JSONResponse({"error":"Conversation not found."},status_code=404)
+    remaining=assistant.remaining_queries(identity)
+    if remaining==0:return JSONResponse({"error":"Daily query limit reached. Try again tomorrow."},status_code=429)
+    history=db.assistant_messages(identity,thread_id);sources=assistant.source_pages(identity,question)
+    db.add_assistant_message(identity,thread_id,"user",question);db.record_assistant_query(identity)
+    def events():
+        yield json.dumps({"type":"sources","items":sources})+"\n";answer=[]
+        try:
+            for token in assistant.stream_answer(identity,question,history,sources):
+                answer.append(token);yield json.dumps({"type":"token","content":token})+"\n"
+            content="".join(answer).strip() or "I could not find an answer in the available pages."
+            message_id=db.add_assistant_message(identity,thread_id,"assistant",content)
+            yield json.dumps({"type":"done","remaining":assistant.remaining_queries(identity),"message_id":message_id})+"\n"
+        except Exception:
+            yield json.dumps({"type":"error","error":"The AI assistant is temporarily unavailable."})+"\n"
+    return StreamingResponse(events(),media_type="application/x-ndjson")
+@rt("/assistant/messages/{message_id}/draft")
+def post(session,message_id:int):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    message=db.assistant_message(identity,message_id)
+    if not message or message["role"]!="assistant":return Response("Assistant answer not found",status_code=404)
+    spaces=db.spaces(identity["org_id"])
+    if not spaces:return RedirectResponse("/settings",status_code=303)
+    title=("Draft: "+message["thread_title"])[:120]
+    page_id=db.create_page(identity,spaces[0]["id"],title)
+    content=json.dumps({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":message["content"]}]}]})
+    db.save_page(identity,page_id,title,content,message["content"],1)
+    return RedirectResponse(f"/pages/{page_id}",status_code=303)
 @rt("/trash")
 def get(session):
     identity=guard(session)
     if isinstance(identity,RedirectResponse):return identity
-    deleted=[p for p in db.pages(identity["org_id"],True) if p["deleted_at"]]
-    return views.list_page(identity,db.spaces(identity["org_id"]),db.pages(identity["org_id"]),"Trash",deleted)
+    deleted=[p for p in db.visible_pages(identity,True) if p["deleted_at"]]
+    return views.list_page(identity,db.spaces(identity["org_id"]),db.visible_pages(identity),"Trash",deleted)
 @rt("/settings")
 def get(session):
     identity=guard(session)
