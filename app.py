@@ -84,7 +84,7 @@ def get(session,email:str="kaljuvee@gmail.com"):
     return RedirectResponse("/",status_code=303)
 @rt("/logout")
 def get(session):session.clear();return RedirectResponse("/",status_code=303)
-@rt("/pages/{pid}")
+@rt("/pages/{pid:int}")
 def get(session,pid:int):
     identity=guard(session)
     if isinstance(identity,RedirectResponse):return identity
