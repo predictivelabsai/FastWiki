@@ -74,3 +74,17 @@ def test_fastoffice_ticket_contract_and_replay_protection(monkeypatch):
     ticket=f"{encoded}.{signature}"
     assert security.verify_suite_ticket(ticket)["email"]=="owner@example.com"
     assert security.verify_suite_ticket(ticket) is None
+
+def test_google_sso_allows_only_verified_configured_domains(monkeypatch):
+    monkeypatch.setenv("GOOGLE_ALLOWED_DOMAINS","mymedicalgateway.com")
+    monkeypatch.setenv("FASTWIKI_ORG_ID","mmg")
+    monkeypatch.setenv("FASTWIKI_ORG_NAME","My Medical Gateway")
+    from fastwiki.security import google_email_allowed, google_identity
+    approved={"sub":"123","email":"Person@MyMedicalGateway.com","email_verified":True,"name":"Person"}
+    assert google_email_allowed(approved)
+    assert google_identity(approved)=={
+        "sub":"google:123","email":"person@mymedicalgateway.com","name":"Person",
+        "org_id":"mmg","org_name":"My Medical Gateway","role":"member",
+    }
+    assert not google_email_allowed({**approved,"email":"person@example.com"})
+    assert not google_email_allowed({**approved,"email_verified":False})
