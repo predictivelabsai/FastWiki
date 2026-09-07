@@ -42,11 +42,3 @@ predictable and inexpensive for SME teams. Real-time co-editing is intentionally
 reserved for a later Y.js/Hocuspocus service so it can be added without changing
 the canonical Tiptap JSON format.
 
-## Production deployment
-
-The Docker image listens on port `5022` and exposes `/health`. Mount a persistent
-volume at `/app/data` so the SQLite database and local attachments survive
-replacement deployments. Google SSO uses authorization-code OIDC at
-`/auth/google` with callback `/auth/google/callback`; set
-`GOOGLE_ALLOWED_DOMAINS=mymedicalgateway.com` to restrict access to verified MMG
-accounts.

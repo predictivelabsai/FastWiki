@@ -3,38 +3,20 @@ import json, mimetypes, os, secrets, uuid
 from pathlib import Path
 from dotenv import load_dotenv
 from fasthtml.common import *
-from fastwiki.seo import register_seo_routes
 from starlette.responses import JSONResponse, RedirectResponse, Response
 load_dotenv()
 from fastwiki import db, storage, views
 from fastwiki.api import api
-from fastwiki.security import google_email_allowed, google_identity, verify_suite_ticket
-
-GOOGLE_CLIENT_ID=os.getenv("GOOGLE_CLIENT_ID","")
-GOOGLE_CLIENT_SECRET=os.getenv("GOOGLE_CLIENT_SECRET","")
-GOOGLE_REDIRECT_URI=os.getenv("GOOGLE_REDIRECT_URI","")
-_google_enabled=bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
-_oauth=None
-if _google_enabled:
-    from authlib.integrations.starlette_client import OAuth
-    _oauth=OAuth()
-    _oauth.register(
-        name="google",
-        client_id=GOOGLE_CLIENT_ID,
-        client_secret=GOOGLE_CLIENT_SECRET,
-        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope":"openid email profile","prompt":"select_account"},
-    )
+from fastwiki.security import verify_suite_ticket
 
 app,rt=fast_app(secret_key=os.getenv("FASTWIKI_SECRET",secrets.token_hex(32)))
 app.mount("/api",api)
 def who(session): return session.get("identity")
-def sign_in_path(): return "/auth/google" if _google_enabled else "/auth/suite"
-def guard(session): return who(session) or RedirectResponse(sign_in_path(),status_code=303)
+def guard(session): return who(session) or RedirectResponse("/auth/suite",status_code=303)
 @rt("/")
 def get(session):
     identity=who(session)
-    if not identity:return views.landing(sign_in_path())
+    if not identity:return views.landing()
     pages=db.pages(identity["org_id"])
     return RedirectResponse(f"/pages/{pages[0]['id']}",status_code=303) if pages else RedirectResponse("/pages/new",status_code=303)
 @rt("/health")
@@ -56,25 +38,6 @@ def get(session,ticket:str=""):
     identity=verify_suite_ticket(ticket)
     if not identity:return RedirectResponse("/?auth=invalid",status_code=303)
     db.provision(identity);session["identity"]={k:identity.get(k) for k in ("sub","email","name","org_id","org_name","role")}
-    return RedirectResponse("/",status_code=303)
-def google_redirect_uri(request):
-    if GOOGLE_REDIRECT_URI:return GOOGLE_REDIRECT_URI
-    host=request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
-    scheme=request.headers.get("x-forwarded-proto") or request.url.scheme
-    return f"{scheme}://{host}/auth/google/callback"
-@rt("/auth/google")
-async def get(request):
-    if not _google_enabled:return RedirectResponse("/",status_code=303)
-    return await _oauth.google.authorize_redirect(request,google_redirect_uri(request))
-@rt("/auth/google/callback")
-async def get(request,session):
-    if not _google_enabled:return RedirectResponse("/",status_code=303)
-    try:token=await _oauth.google.authorize_access_token(request)
-    except Exception:return RedirectResponse("/?auth=google_error",status_code=303)
-    info=token.get("userinfo") or {}
-    if not google_email_allowed(info):return RedirectResponse("/?auth=domain_denied",status_code=303)
-    identity=google_identity(info)
-    db.provision(identity);session["identity"]=identity
     return RedirectResponse("/",status_code=303)
 @rt("/auth/dev")
 def get(session,email:str="kaljuvee@gmail.com"):
@@ -172,6 +135,4 @@ def post(session,name:str,description:str="",visibility:str="org",comments_mode:
     identity=guard(session)
     if not isinstance(identity,RedirectResponse):db.create_space(identity,name,description,visibility,comments_mode)
     return RedirectResponse("/",status_code=303)
-
-register_seo_routes(app)
 if __name__=="__main__":serve(port=int(os.getenv("FASTWIKI_PORT","5022")))

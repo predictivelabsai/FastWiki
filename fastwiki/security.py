@@ -32,26 +32,3 @@ def verify_suite_ticket(ticket: str) -> dict | None:
 def api_authorized(authorization: str | None) -> bool:
     token = os.getenv("FASTSME_API_TOKEN", "")
     return bool(token and authorization == f"Bearer {token}")
-
-def google_email_allowed(info: dict) -> bool:
-    email = str(info.get("email") or "").strip().lower()
-    if not email or not info.get("email_verified", False) or "@" not in email:
-        return False
-    domains = {
-        domain.strip().lower()
-        for domain in os.getenv("GOOGLE_ALLOWED_DOMAINS", "mymedicalgateway.com").split(",")
-        if domain.strip()
-    }
-    return email.rsplit("@", 1)[1] in domains
-
-def google_identity(info: dict) -> dict:
-    email = str(info["email"]).strip().lower()
-    subject = str(info.get("sub") or email)
-    return {
-        "sub": f"google:{subject}",
-        "email": email,
-        "name": str(info.get("name") or email.split("@", 1)[0]),
-        "org_id": os.getenv("FASTWIKI_ORG_ID", "mymedicalgateway.com"),
-        "org_name": os.getenv("FASTWIKI_ORG_NAME", "My Medical Gateway"),
-        "role": "member",
-    }

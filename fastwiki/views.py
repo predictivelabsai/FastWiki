@@ -1,7 +1,6 @@
 from __future__ import annotations
 import html, json
 from fasthtml.common import *
-from .seo import seo_meta
 from urllib.parse import quote
 
 ACCENT="#4f46e5"; TINT="#eef2ff"
@@ -24,16 +23,16 @@ BASE_CSS=r"""
 @media(max-width:900px){.hero{grid-template-columns:1fr}.mock{display:none}.featuregrid,.partnergrid{grid-template-columns:1fr}.shell{grid-template-columns:210px 1fr}.rightbar{display:none}.editorwrap{padding:35px 26px}.titleinput{font-size:34px}}
 """
 
-def head(title, public=False):
-    return Head(Title(title),Meta(charset="utf-8"),Meta(name="viewport",content="width=device-width,initial-scale=1"),Meta(name="description",content="Open-source knowledge that works with your whole office suite."),*(seo_meta(title=title) if public else ()),Link(rel="icon",type="image/svg+xml",href=FAVICON),Link(rel="preconnect",href="https://fonts.googleapis.com"),Link(rel="stylesheet",href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"),Style(BASE_CSS))
+def head(title):
+    return Head(Title(title),Meta(charset="utf-8"),Meta(name="viewport",content="width=device-width,initial-scale=1"),Meta(name="description",content="Open-source knowledge that works with your whole office suite."),Link(rel="icon",type="image/svg+xml",href=FAVICON),Link(rel="preconnect",href="https://fonts.googleapis.com"),Link(rel="stylesheet",href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"),Style(BASE_CSS))
 
 def partner_section():
     return Section(Span("Partners",cls="eyebrow"),H2("Connect with trusted integration specialists."),P("Identity, software delivery, data engineering and applied-AI expertise for FastSME implementations."),Div(*[A(Img(src=logo,alt=f"{name} logo",loading="lazy"),Small("Integration Partner"),H3(name),P(description),href=url,target="_blank",rel="noopener noreferrer",cls="partner") for name,url,logo,description in PARTNERS],cls="partnergrid"),id="partners",cls="partners")
 
-def landing(sign_in_href="/auth/suite"):
-    return Html(head("FastWiki · Knowledge without lock-in", public=True),Body(
-        Nav(A(Span("W",cls="mark"),"FastWiki",href="/",cls="brand"),Div(A("Partners",href="#partners"),A("Developers",href="/developers"),A("Sign In",href=sign_in_href,cls="btn ghost"),cls="navlinks"),cls="nav"),
-        Main(Section(Div(Span("Open knowledge for independent teams",cls="eyebrow"),H1("Turn what your team knows into momentum."),P("A calm, connected workspace for handbooks, processes, project knowledge and decisions—open source, portable, and built for SMEs."),Div(A("Sign in to your workspace",href=sign_in_href,cls="btn"),A("Explore the API",href="/developers",cls="btn ghost"),cls="actions")),Div(Div(Div(Span("Spaces"),*[Div(cls="mockline") for _ in range(6)],cls="mockside"),Div(H3("Product launch playbook"),*[Div(cls="mockpara",style=f"width:{w}%") for w in (96,82,91,68,88,54)],cls="mockpage"),cls="mockin"),cls="mock"),cls="hero"),
+def landing():
+    return Html(head("FastWiki · Knowledge without lock-in"),Body(
+        Nav(A(Span("W",cls="mark"),"FastWiki",href="/",cls="brand"),Div(A("Partners",href="#partners"),A("Developers",href="/developers"),A("Sign In",href="/auth/suite",cls="btn ghost"),cls="navlinks"),cls="nav"),
+        Main(Section(Div(Span("Open knowledge for independent teams",cls="eyebrow"),H1("Turn what your team knows into momentum."),P("A calm, connected workspace for handbooks, processes, project knowledge and decisions—open source, portable, and built for SMEs."),Div(A("Sign in to your workspace",href="/auth/suite",cls="btn"),A("Explore the API",href="/developers",cls="btn ghost"),cls="actions")),Div(Div(Div(Span("Spaces"),*[Div(cls="mockline") for _ in range(6)],cls="mockside"),Div(H3("Product launch playbook"),*[Div(cls="mockpara",style=f"width:{w}%") for w in (96,82,91,68,88,54)],cls="mockpage"),cls="mockin"),cls="mock"),cls="hero"),
         Section(Div(*[Article(B(f"0{i}"),H2(t),P(d),cls="feature") for i,(t,d) in enumerate([
             ("Write beautifully","Tiptap-powered rich editing with a portable JSON source and optional Markdown view."),
             ("Connect the work","Embed FastDocs, FastSheets, FastSlides, FastDrive and the rest of FastOffice."),
