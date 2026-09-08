@@ -102,6 +102,17 @@ def test_new_page_route_creates_page(database,monkeypatch):
     assert response.headers["location"].startswith("/pages/")
     assert len(db.pages("dev"))==before+1
 
+def test_health_exposes_dated_release(database):
+    from app import app
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        response=client.get("/health")
+
+    assert response.status_code==200
+    assert response.json()["version"]=="1.0.0"
+    assert response.json()["release_date"]=="2026-09-08"
+
 def test_drafts_are_private_until_published(database):
     db,a,_=database
     member={"sub":"member","email":"member@example.com","name":"Member","org_id":"org-a","org_name":"Alpha","role":"member"}
@@ -141,6 +152,50 @@ def test_page_layout_has_bottom_resources_threads_and_publication_metadata(datab
     assert "Published " in response.text and "Version " in response.text
     assert 'id="publication-version">1</span>' in response.text
     assert "Julian Kaljuvee" in response.text
+    assert 'id="mode-rich"' in response.text and 'aria-pressed="true"' in response.text
+    assert 'id="mode-block"' in response.text and ">Blocks</button>" in response.text
+    assert 'id="mode-md"' in response.text
+    assert f'href="/pages/{page["id"]}/pdf"' in response.text
+    assert "Download PDF" in response.text
+
+def test_page_pdf_is_a_protected_download(database,monkeypatch):
+    db,_,_=database
+    monkeypatch.setenv("FASTWIKI_ENV","development")
+    from app import app
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as anonymous:
+        page_id=db.pages("org-a")[0]["id"]
+        redirect=anonymous.get(f"/pages/{page_id}/pdf",follow_redirects=False)
+        assert redirect.status_code==303
+
+    with TestClient(app) as client:
+        client.get("/auth/dev")
+        page=db.pages("dev")[0]
+        response=client.get(f"/pages/{page['id']}/pdf")
+
+    assert response.status_code==200
+    assert response.headers["content-type"]=="application/pdf"
+    assert "attachment;" in response.headers["content-disposition"]
+    assert response.content.startswith(b"%PDF-")
+    assert len(response.content)>1000
+
+def test_page_pdf_renders_lists_code_and_tables():
+    from fastwiki.pdf import page_pdf
+    content={"type":"doc","content":[
+        {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Section"}]},
+        {"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]}]},
+        {"type":"blockquote","content":[{"type":"paragraph","content":[{"type":"text","text":"Quoted"}]}]},
+        {"type":"codeBlock","content":[{"type":"text","text":"print(1)"}]},
+        {"type":"table","content":[
+            {"type":"tableRow","content":[{"type":"tableHeader","content":[{"type":"paragraph","content":[{"type":"text","text":"Name"}]}]}]},
+            {"type":"tableRow","content":[{"type":"tableCell","content":[{"type":"paragraph","content":[{"type":"text","text":"Value"}]}]}]},
+        ]},
+    ]}
+    result=page_pdf({"title":"Rich page","status":"draft","version":3,"author_name":"Alice","content_json":json.dumps(content)})
+
+    assert result.startswith(b"%PDF-")
+    assert len(result)>1000
 
 def test_child_pages_form_tenant_safe_hierarchy(database):
     db,a,b=database
