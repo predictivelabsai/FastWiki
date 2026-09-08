@@ -1,13 +1,15 @@
 from __future__ import annotations
-import json, mimetypes, os, secrets, uuid
+import json, mimetypes, os, re, secrets, uuid
 from pathlib import Path
+from urllib.parse import quote
 from dotenv import load_dotenv
 from fasthtml.common import *
 from starlette.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 load_dotenv()
-from fastwiki import assistant, db, storage, views
+from fastwiki import assistant, db, pdf, storage, views
 from fastwiki.api import api
 from fastwiki.security import verify_suite_ticket
+from fastwiki.version import RELEASE_DATE, VERSION
 
 app,rt=fast_app(secret_key=os.getenv("FASTWIKI_SECRET",secrets.token_hex(32)))
 app.mount("/api",api)
@@ -24,7 +26,7 @@ def get(session):
     pages=db.visible_pages(identity)
     return RedirectResponse(f"/pages/{pages[0]['id']}",status_code=303) if pages else RedirectResponse("/pages/new",status_code=303)
 @rt("/health")
-def get(): return JSONResponse({"status":"ok","product":"FastWiki","storage":storage.backend()})
+def get(): return JSONResponse({"status":"ok","product":"FastWiki","version":VERSION,"release_date":RELEASE_DATE,"storage":storage.backend()})
 @rt("/favicon.ico")
 def get():
     return Response('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#4f46e5"/><path fill="white" d="M13 17h9l5 27 5-18 5 18 5-27h9l-10 31h-9l-5-16-5 16h-9Z"/></svg>',media_type="image/svg+xml")
@@ -58,6 +60,15 @@ def get(session,pid:int):
     current=db.visible_page(identity,pid)
     if not current or current["deleted_at"]:return Response("Page not found",status_code=404)
     return views.page_shell(identity,db.spaces(identity["org_id"]),db.visible_pages(identity),current,db.comments(identity["org_id"],pid),db.attachments(identity["org_id"],pid),db.embeds(identity["org_id"],pid),db.ancestors(identity,pid))
+@rt("/pages/{pid:int}/pdf")
+def get(session,pid:int):
+    identity=guard(session)
+    if isinstance(identity,RedirectResponse):return identity
+    current=db.visible_page(identity,pid)
+    if not current or current["deleted_at"]:return Response("Page not found",status_code=404)
+    safe_name=re.sub(r"[^A-Za-z0-9._-]+","-",current["title"]).strip("-.") or "wiki-page"
+    encoded_name=quote((current["title"] or "wiki-page")+".pdf")
+    return Response(pdf.page_pdf(current),media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=\"{safe_name}.pdf\"; filename*=UTF-8''{encoded_name}"})
 @rt("/pages/new")
 def get(session):
     identity=guard(session)
